@@ -1,0 +1,93 @@
+import { Webhook } from "svix";
+import { headers } from "next/headers";
+import { WebhookEvent } from "@clerk/nextjs/server";
+import { prisma } from "@/lib/client";
+
+export async function POST(req: Request) {
+  console.log("✅ Webhook HIT");
+
+  const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
+
+  if (!WEBHOOK_SECRET) {
+    throw new Error("CLERK_WEBHOOK_SECRET is missing!");
+  }
+
+  const headerPayload = await headers();
+
+  const svix_id = headerPayload.get("svix-id");
+  const svix_timestamp = headerPayload.get("svix-timestamp");
+  const svix_signature = headerPayload.get("svix-signature");
+
+  if (!svix_id || !svix_timestamp || !svix_signature) {
+    return new Response("Missing svix headers", { status: 400 });
+  }
+
+  const payload = await req.json();
+  const body = JSON.stringify(payload);
+
+  const wh = new Webhook(WEBHOOK_SECRET);
+
+  let evt: WebhookEvent;
+
+  try {
+    evt = wh.verify(body, {
+      "svix-id": svix_id,
+      "svix-timestamp": svix_timestamp,
+      "svix-signature": svix_signature,
+    }) as WebhookEvent;
+  } catch (err) {
+    console.error("❌ Webhook verification failed:", err);
+    return new Response("Invalid signature", { status: 400 });
+  }
+
+  console.log("📩 Event:", evt.type);
+
+  // =========================
+  // USER CREATED
+  // =========================
+  if (evt.type === "user.created") {
+    try {
+      const createdUser = await prisma.user.create({
+        data: {
+          id: evt.data.id,
+          username: evt.data.username!,
+          avatar: evt.data.image_url || "/noAvatar.png",
+          cover: "/noCover.png",
+        },
+      });
+
+      console.log("✅ User created:", createdUser);
+
+      return new Response("User created", { status: 200 });
+    } catch (error) {
+      console.error("❌ Prisma create error:", error);
+      return new Response("Database error", { status: 500 });
+    }
+  }
+
+  // =========================
+  // USER UPDATED
+  // =========================
+  if (evt.type === "user.updated") {
+    try {
+      const updatedUser = await prisma.user.update({
+        where: {
+          id: evt.data.id,
+        },
+        data: {
+          username: evt.data.username!,
+          avatar: evt.data.image_url || "/noAvatar.png",
+        },
+      });
+
+      console.log("✅ User updated:", updatedUser);
+
+      return new Response("User updated", { status: 200 });
+    } catch (error) {
+      console.error("❌ Prisma update error:", error);
+      return new Response("Database error", { status: 500 });
+    }
+  }
+
+  return new Response("Webhook received", { status: 200 });
+}
